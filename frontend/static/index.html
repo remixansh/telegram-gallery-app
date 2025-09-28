@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Photo Gallery</title>
+    <style>
+        /* --- General Styles (Glassmorphism) --- */
+        body {
+            font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: linear-gradient(135deg, #dbeafe, #f5f3ff);
+            margin: 0;
+            color: #1c1e21;
+        }
+
+        /* --- Sidebar --- */
+        .app-layout { display: flex; }
+        .sidebar {
+            width: 260px; height: 100vh; position: fixed; top: 0; left: 0;
+            background: rgba(255, 255, 255, 0.25);
+            backdrop-filter: blur(12px) saturate(150%);
+            border-right: 1px solid rgba(255, 255, 255, 0.4);
+            padding: 1rem; box-sizing: border-box;
+            display: flex; flex-direction: column;
+            box-shadow: 4px 0 12px rgba(0,0,0,0.05);
+        }
+        .sidebar-header {
+            font-size: 1.3rem; font-weight: 600; padding: 0.75rem;
+            border-bottom: 1px solid rgba(255,255,255,0.3);
+            margin-bottom: 1rem; color: #111827;
+        }
+        #groupList { list-style: none; padding: 0; margin: 0; overflow-y: auto; flex-grow: 1; }
+        #groupList li {
+            position: relative; display: flex; align-items: center;
+            justify-content: space-between; border-radius: 12px; transition: background 0.25s;
+        }
+        #groupList li:hover { background: rgba(255,255,255,0.3); }
+        #groupList li a {
+            display: block; padding: 12px 10px; text-decoration: none;
+            color: #333; font-weight: 500; border-radius: 12px;
+            flex-grow: 1;
+        }
+        #groupList li a.active {
+            background: linear-gradient(135deg, #3b82f6, #2563eb);
+            color: white; box-shadow: 0 4px 10px rgba(37,99,235,0.35);
+        }
+        .group-menu-btn {
+            background: none; border: none; cursor: pointer; padding: 8px; margin-left: 5px;
+            border-radius: 50%; width: 32px; height: 32px; display: flex;
+            align-items: center; justify-content: center; flex-shrink: 0; color: #374151;
+        }
+        .group-menu-btn:hover { background-color: rgba(0,0,0,0.1); }
+        .group-menu-dropdown {
+            display: none; position: absolute; top: 40px; right: 0;
+            background: rgba(255, 255, 255, 0.7); backdrop-filter: blur(10px);
+            border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); z-index: 10;
+            overflow: hidden; width: 150px; border: 1px solid rgba(255,255,255,0.4);
+        }
+        .group-menu-dropdown.visible { display: block; }
+        .group-menu-dropdown button {
+            display: block; width: 100%; padding: 10px 15px; border: none; background: none;
+            text-align: left; cursor: pointer; color: #dc2626; font-weight: 500;
+        }
+        .group-menu-dropdown button:hover { background-color: rgba(255, 100, 100, 0.2); }
+
+        /* --- Main Content --- */
+        .main-content { margin-left: 260px; width: calc(100% - 260px); padding: 2rem; }
+        .container {
+            max-width: 1200px; margin: 0 auto; border-radius: 20px;
+            background: rgba(255,255,255,0.4); backdrop-filter: blur(15px) saturate(180%);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.08);
+        }
+
+        /* --- Header --- */
+        header {
+            border-bottom: 1px solid rgba(255,255,255,0.4);
+            padding: 1.5rem; display: flex; justify-content: center; align-items: center;
+            background: rgba(255,255,255,0.25); backdrop-filter: blur(10px);
+            border-radius: 20px 20px 0 0; position: relative;
+        }
+        h1 { font-size: 2.2rem; margin: 0; color: #111827; flex-grow: 1; text-align: center; }
+        .header-btn {
+            position: absolute; left: 1.5rem;
+            width: 44px; height: 44px; border-radius: 50%; border: none;
+            background: linear-gradient(135deg, #3b82f6, #2563eb); color: white; font-size: 24px;
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .header-btn:hover { transform: scale(1.1); box-shadow: 0 6px 14px rgba(59,130,246,0.35); }
+        
+        #auth-container { position: absolute; right: 1.5rem; display: flex; gap: 0.5rem; }
+        .auth-btn, .delete-btn, .form-button, .fab-add-photo {
+            border-radius: 12px; font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s, background 0.3s;
+            cursor: pointer; border: none;
+        }
+        .auth-btn:hover, .delete-btn:hover, .form-button:hover:not(:disabled), .fab-add-photo:hover {
+            transform: translateY(-2px) scale(1.03); box-shadow: 0 6px 16px rgba(0,0,0,0.15);
+        }
+        #loginBtn { background: linear-gradient(135deg,#2563eb,#1d4ed8); color:white; padding:10px 20px; }
+        #logoutBtn { background: linear-gradient(135deg,#ef4444,#dc2626); color:white; padding:10px 20px; }
+        .delete-btn { background: linear-gradient(135deg,#ef4444,#dc2626); color:white; padding:10px 20px; }
+        
+        .sidebar #logoutBtn {
+            width: 100%;
+            padding: 12px;
+            box-sizing: border-box;
+            text-align: center;
+            margin-top: 1rem;
+        }
+
+        #selectAllBtn {
+            background: linear-gradient(135deg, #60a5fa, #3b82f6);
+            color: white;
+            padding: 10px 20px;
+        }
+
+        /* --- Gallery --- */
+        .gallery-container { padding: 1.5rem; }
+        .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(220px,1fr)); gap: 20px; }
+        .photo-card {
+            border-radius: 16px; overflow: hidden; position: relative;
+            background: rgba(255,255,255,0.35); backdrop-filter: blur(8px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.12);
+            transition: transform 0.25s, box-shadow 0.25s; cursor: pointer;
+        }
+        .photo-card:hover { transform: translateY(-6px) scale(1.02); box-shadow: 0 10px 20px rgba(0,0,0,0.2); }
+        .photo-card img { width: 100%; height: 200px; object-fit: cover; display: block; }
+        .photo-card.selected { box-shadow: 0 0 0 3px #2563eb; }
+        .photo-card.selected img { opacity: 0.7; }
+        .select-checkbox {
+            position: absolute; top: 12px; right: 12px; width: 24px; height: 24px;
+            cursor: pointer; z-index: 10; accent-color: #2563eb;
+        }
+
+        .status-message { text-align:center; font-size:1.2rem; color:#374151; padding:3rem; }
+
+        /* Floating Action Button */
+        .fab-add-photo {
+            position: fixed; bottom: 30px; right: 30px;
+            width: 64px; height: 64px; border-radius: 50%;
+            background: linear-gradient(135deg,#2563eb,#1d4ed8); color:white;
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.2); z-index: 999;
+        }
+
+        /* --- Lightboxes --- */
+        .lightbox {
+            position: fixed; top:0; left:0; width:100%; height:100%;
+            background: rgba(0,0,0,0.45); backdrop-filter: blur(5px);
+            display: flex; justify-content: center; align-items: center;
+            opacity: 0; visibility: hidden;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+            z-index: 1000;
+        }
+        .lightbox.visible { opacity: 1; visibility: visible; }
+        .lightbox-content {
+            position: relative;
+            background: rgba(255, 255, 255, 0.5);
+            backdrop-filter: blur(18px) saturate(180%);
+            border: 1px solid rgba(255,255,255,0.4);
+            border-radius: 20px;
+            padding: 2rem;
+            max-width: 500px; width: 90%;
+            box-shadow: 0 12px 35px rgba(0,0,0,0.25);
+            animation: fadeInUp 0.3s ease;
+        }
+        
+        .close-btn {
+            position: absolute; top: 15px; right: 20px;
+            background: rgba(0,0,0,0.4); border-radius: 50%;
+            width: 36px; height: 36px;
+            cursor: pointer; z-index: 10;
+            transition: background 0.2s, transform 0.2s;
+            border: none; padding: 0;
+        }
+        .close-btn::before,
+        .close-btn::after {
+            content: ''; position: absolute;
+            top: 50%; left: 50%;
+            width: 16px; height: 2px;
+            background-color: #fff; border-radius: 1px;
+        }
+        .close-btn::before { transform: translate(-50%, -50%) rotate(45deg); }
+        .close-btn::after { transform: translate(-50%, -50%) rotate(-45deg); }
+        .close-btn:hover {
+            background: #e53e3e;
+            transform: rotate(180deg);
+        }
+
+        #imageLightboxContent {
+            background: none; padding: 0; display: flex; flex-direction: column; align-items: center;
+            backdrop-filter: none; border: none; box-shadow: none;
+        }
+        #imageLightboxContent img { max-width: 90vw; max-height: 80vh; border-radius: 12px; object-fit: contain; }
+        .download-btn {
+            display: inline-block; margin-top: 1rem; padding: 12px 24px;
+            background: linear-gradient(135deg, #3b82f6, #2563eb); color: #fff; text-decoration: none;
+            border-radius: 12px; font-weight: bold;
+        }
+        @keyframes fadeInUp { from { opacity:0; transform:translateY(20px);} to {opacity:1; transform:translateY(0);} }
+        
+        /* --- Form Elements (Glass Style) --- */
+        h2 { margin-top: 0; color: #111827;}
+        .drop-zone {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            padding: 2rem; border: 2px dashed rgba(0,0,0,0.2); border-radius: 12px;
+            background: rgba(255,255,255,0.2); cursor: pointer; transition: background 0.2s, border-color 0.2s;
+            text-align: center; color: #374151; margin-bottom: 1.5rem;
+        }
+        .drop-zone:hover { background-color: rgba(255,255,255,0.3); border-color: #2563eb; }
+        .drop-zone--over { border-color: #2563eb; background-color: rgba(59, 130, 246, 0.1); }
+        .drop-zone-icon { font-size: 3rem; margin-bottom: 0.5rem; }
+        .drop-zone-text { font-weight: 500; }
+        #file-info { font-size: 0.9rem; color: #4b5563; margin-top: 0.5rem; }
+
+        .form-input {
+            width: 100%; padding: 12px; margin-bottom: 1rem; box-sizing: border-box;
+            border: 1px solid rgba(255,255,255,0.4); border-radius: 12px;
+            background: rgba(255,255,255,0.25); backdrop-filter: blur(10px);
+            font-size: 1rem; color: #111827; transition: border 0.2s, box-shadow 0.2s;
+        }
+        .form-input::placeholder { color: #6b7280; }
+        .form-input:focus {
+            outline: none; border-color: #3b82f6;
+            box-shadow: 0 0 0 4px rgba(59,130,246,0.3);
+            background: rgba(255,255,255,0.35);
+        }
+        .form-button {
+            width: 100%; padding: 12px; font-weight: bold; color: white;
+            background: linear-gradient(135deg,#2563eb,#1d4ed8);
+        }
+        .form-button:hover:not(:disabled) { background: linear-gradient(135deg,#1d4ed8,#1e40af); }
+        .form-button:disabled { background: #9ca3af; cursor: not-allowed; }
+        #uploadStatus, #loginStatus { margin-top: 1rem; font-weight: 500; }
+        
+        #confirmModal .modal-content { padding: 2rem; text-align: center; }
+        .modal-buttons { margin-top: 1.5rem; }
+        .modal-buttons button { padding: 10px 20px; border: none; border-radius: 12px; cursor: pointer; font-size: 1rem; font-weight: bold; margin: 0 0.5rem; transition: transform 0.2s; }
+        .modal-buttons button:hover { transform: translateY(-2px); }
+        #confirmYes { background: linear-gradient(135deg, #ef4444, #dc2626); color: white; }
+        #confirmNo { background-color: #e5e7eb; color: #374151; }
+
+        /* --- Login Specific --- */
+        #loginLightbox .lightbox-content {
+            display:flex; overflow:hidden; max-width:750px; padding:0;
+        }
+        .login-branding {
+            width:45%; background: linear-gradient(135deg,#37aee2,#1e96c8);
+            color:white; display:flex; flex-direction:column; align-items:center; justify-content:center;
+            padding:2.5rem; text-align: center; box-sizing: border-box;
+        }
+        .login-branding svg { width: 70px; height: 70px; margin-bottom: 1rem; }
+        .login-branding h2 { margin: 0 0 0.5rem 0; font-size: 1.8rem; }
+        .login-branding p { opacity: 0.8; margin: 0; }
+        
+        .login-form-wrapper {
+            width: 55%;
+            padding: 2.5rem;
+            box-sizing: border-box;
+            overflow: hidden; 
+        }
+        .login-form-wrapper p { color: #4b5563; }
+        
+        .form-steps-container {
+            width: 250%; 
+            display: flex;
+            transition: transform 0.4s cubic-bezier(0.25, 1, 0.5, 1);
+        }
+        .form-steps-container.show-verify-step { transform: translateX(-50%); }
+        #phone-step, #verify-step {
+            width: 50%;
+            box-sizing: border-box;
+            padding-right: 5rem;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="app-layout">
+        <nav class="sidebar">
+            <div class="sidebar-header">My Albums</div>
+            <ul id="groupList"></ul>
+            <button id="logoutBtn" class="auth-btn" style="display: none;">Logout</button>
+        </nav>
+        <main class="main-content">
+            <div class="container">
+                <header>
+                    <button class="header-btn" id="createGroupBtn" title="Create New Group">+</button>
+                    <h1 id="chat-title">Telegram Gallery</h1>
+                    <div id="auth-container">
+                        <button id="loginBtn" class="auth-btn">Login</button>
+                        <button id="selectAllBtn" class="auth-btn" style="display: none;">Select All</button>
+                        <button id="deleteBtn" class="delete-btn" style="display: none;">Delete</button>
+                    </div>
+                </header>
+                <div class="gallery-container">
+                    <div class="gallery-grid" id="galleryGrid"></div>
+                    <div class="status-message" id="statusMessage">Checking login status...</div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div class="lightbox" id="imageLightbox">
+        <span class="close-btn" id="imageCloseBtn"></span>
+        <div class="lightbox-content" id="imageLightboxContent">
+            <img src="" alt="Full size view" id="lightboxImg">
+            <a href="#" class="download-btn" id="downloadBtn" download>Download Image</a>
+        </div>
+    </div>
+    
+    <button class="fab-add-photo" id="addPhotoBtn" title="Upload Photo" style="display: none;">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+        </svg>
+    </button>
+    
+    <div class="lightbox" id="uploadLightbox">
+        <span class="close-btn" id="uploadCloseBtn"></span>
+        <div class="lightbox-content">
+            <form id="uploadForm" class="upload-form">
+                <h2>Upload Photos</h2>
+                <p>Select one or more image files to send.</p>
+                <input type="file" id="fileInput" name="file" accept="image/*" required multiple hidden>
+                <label for="fileInput" id="dropZone" class="drop-zone">
+                    <div class="drop-zone-icon">&#128228;</div>
+                    <div class="drop-zone-text">Drag & drop files here, or click to select</div>
+                    <span id="file-info">No files chosen</span>
+                </label>
+                <button type="submit" id="uploadBtn" class="form-button">Upload</button>
+                <div id="uploadStatus"></div>
+            </form>
+        </div>
+    </div>
+
+    <div class="lightbox" id="confirmModal">
+        <div class="lightbox-content modal-content">
+            <p id="confirmMessage">Are you sure?</p>
+            <div class="modal-buttons">
+                <button id="confirmNo">Cancel</button>
+                <button id="confirmYes">Yes, Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="lightbox" id="loginLightbox">
+        <span class="close-btn" id="loginCloseBtn"></span>
+        <div class="lightbox-content">
+            <div class="login-branding">
+                <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9.78 18.65l.28-4.23l7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3L3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.57c-.28 1.13-1.04 1.4-1.84.89l-4.78-3.52l-2.32 2.2c-.28.27-.5.41-.87.41z"/></svg>
+                <h2>Welcome Back</h2>
+                <p>This is developed by ANSH RAJ.. Buy Me a Coffee ansh.upi@pingpay. </p>
+            </div>
+            <div class="login-form-wrapper">
+                <form id="loginForm" class="login-form">
+                    <h2>Login</h2>
+                    <div class="form-steps-container" id="formStepsContainer">
+                        <div id="phone-step">
+                            <p>Enter your phone number to begin.</p>
+                            <input type="text" value="+91" id="phoneInput" class="form-input" placeholder="+1234567890" required>
+                            <button type="button" id="sendCodeBtn" class="form-button">Get OTP</button>
+                        </div>
+                        <div id="verify-step">
+                            <p>Enter the code from Telegram.</p>
+                            <input type="text" id="codeInput" class="form-input" placeholder="OTP Code" required>
+                            <input type="password" id="passwordInput" class="form-input" placeholder="2FA Password (if enabled)" style="display: none;">
+                            <button type="submit" id="signInBtn" class="form-button">Sign In</button>
+                        </div>
+                    </div>
+                    <div id="loginStatus"></div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        // --- DOM Elements ---
+        const groupList = document.getElementById('groupList');
+        const galleryGrid = document.getElementById('galleryGrid');
+        const statusMessage = document.getElementById('statusMessage');
+        const deleteBtn = document.getElementById('deleteBtn');
+        const selectAllBtn = document.getElementById('selectAllBtn');
+        const chatTitle = document.getElementById('chat-title');
+        const createGroupBtn = document.getElementById('createGroupBtn');
+        const imageLightbox = document.getElementById('imageLightbox');
+        const lightboxImg = document.getElementById('lightboxImg');
+        const imageCloseBtn = document.getElementById('imageCloseBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        const addPhotoBtn = document.getElementById('addPhotoBtn');
+        const uploadLightbox = document.getElementById('uploadLightbox');
+        const uploadCloseBtn = document.getElementById('uploadCloseBtn');
+        const uploadForm = document.getElementById('uploadForm');
+        const fileInput = document.getElementById('fileInput');
+        const uploadBtn = document.getElementById('uploadBtn');
+        const uploadStatus = document.getElementById('uploadStatus');
+        const confirmModal = document.getElementById('confirmModal');
+        const confirmMessage = document.getElementById('confirmMessage');
+        const confirmYes = document.getElementById('confirmYes');
+        const confirmNo = document.getElementById('confirmNo');
+        const dropZone = document.getElementById('dropZone');
+        const fileInfo = document.getElementById('file-info');
+        
+        // --- Auth DOM Elements ---
+        const loginBtn = document.getElementById('loginBtn');
+        const logoutBtn = document.getElementById('logoutBtn');
+        const loginLightbox = document.getElementById('loginLightbox');
+        const loginCloseBtn = document.getElementById('loginCloseBtn');
+        const loginForm = document.getElementById('loginForm');
+        const formStepsContainer = document.getElementById('formStepsContainer');
+        const phoneStep = document.getElementById('phone-step');
+        const verifyStep = document.getElementById('verify-step');
+        const phoneInput = document.getElementById('phoneInput');
+        const sendCodeBtn = document.getElementById('sendCodeBtn');
+        const codeInput = document.getElementById('codeInput');
+        const passwordInput = document.getElementById('passwordInput');
+        const signInBtn = document.getElementById('signInBtn');
+        const loginStatus = document.getElementById('loginStatus');
+
+        // --- Configuration & State ---
+        const PHOTO_LIMIT = 50;
+        const API_BASE_URL = 'http://127.0.0.1:8000';
+        let currentChatId = null;
+        let selectedPhotos = new Set(); 
+        let currentConfirmCallback = null;
+
+        // --- State for progressive group loading ---
+        let isLoadingGroups = false;
+        let allGroupsLoaded = false;
+        let currentGroupOffset = 0;
+        const GROUPS_LIMIT = 15;
+
+        // --- State for photo infinite scroll ---
+        let currentPhotoOffset = 0;
+        let isLoadingPhotos = false;
+        let allPhotosLoaded = false;
+
+        // --- Authentication Functions ---
+        async function checkAuthStatus() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/auth/status`);
+                const data = await response.json();
+                updateUIForAuthState(data.is_logged_in);
+            } catch (error) {
+                console.error("Auth check failed:", error);
+                updateUIForAuthState(false);
+                statusMessage.textContent = 'Could not connect to the server.';
+            }
+        }
+
+        function updateUIForAuthState(isLoggedIn) {
+            if (isLoggedIn) {
+                loginBtn.style.display = 'none';
+                logoutBtn.style.display = 'inline-block';
+                addPhotoBtn.style.display = 'flex';
+                initializeGroupLoading();
+            } else {
+                loginBtn.style.display = 'inline-block';
+                logoutBtn.style.display = 'none';
+                addPhotoBtn.style.display = 'none';
+                groupList.innerHTML = '';
+                galleryGrid.innerHTML = '';
+                statusMessage.textContent = 'Please log in to view your groups and photos.';
+                chatTitle.textContent = 'Telegram Gallery';
+            }
+        }
+
+        function openLoginLightbox() { loginLightbox.classList.add('visible'); }
+        
+        function closeLoginLightbox() { 
+            loginLightbox.classList.remove('visible');
+            setTimeout(() => { 
+                loginStatus.textContent = '';
+                formStepsContainer.classList.remove('show-verify-step');
+                
+                const verifyStepP = verifyStep.querySelector('p');
+                verifyStepP.textContent = "Enter the code from Telegram.";
+                codeInput.style.display = 'block';
+                passwordInput.style.display = 'none';
+
+                loginForm.reset();
+                phoneInput.value = "+91";
+            }, 400);
+        }
+
+        async function handleSendCode() {
+            const phone = phoneInput.value;
+            if (!phone) { 
+                loginStatus.style.color = '#dc2626';
+                loginStatus.textContent = 'Please enter a phone number.'; 
+                return; 
+            }
+            sendCodeBtn.disabled = true;
+            loginStatus.style.color = 'inherit';
+            loginStatus.textContent = 'Sending OTP...';
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/login/send-code`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone }),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail);
+
+                formStepsContainer.classList.add('show-verify-step');
+                loginStatus.textContent = data.message;
+            } catch (error) {
+                loginStatus.style.color = '#dc2626';
+                loginStatus.textContent = `Error: ${error.message}`;
+            } finally {
+                sendCodeBtn.disabled = false;
+            }
+        }
+
+        async function handleSignIn(event) {
+            event.preventDefault();
+            const code = codeInput.value;
+            const password = passwordInput.value;
+
+            if (passwordInput.style.display !== 'none' && !password) {
+                loginStatus.style.color = '#dc2626';
+                loginStatus.textContent = 'Please enter your password.';
+                return;
+            }
+            if (passwordInput.style.display === 'none' && !code) {
+                loginStatus.style.color = '#dc2626';
+                loginStatus.textContent = 'Please enter the OTP code.';
+                return;
+            }
+
+            signInBtn.disabled = true;
+            loginStatus.style.color = 'inherit';
+            loginStatus.textContent = 'Verifying...';
+
+            try {
+                const payload = { code, password };
+                
+                const response = await fetch(`${API_BASE_URL}/api/login/verify`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.detail);
+
+                if (data.status === 'password_needed') {
+                    const verifyStepP = verifyStep.querySelector('p');
+                    verifyStepP.textContent = data.message;
+                    codeInput.style.display = 'none';
+                    passwordInput.style.display = 'block';
+                    passwordInput.focus();
+                    loginStatus.textContent = '';
+                } else if (data.status === 'login_successful') {
+                    loginStatus.style.color = '#16a34a';
+                    loginStatus.textContent = 'Login successful!';
+                    setTimeout(() => {
+                        closeLoginLightbox();
+                        checkAuthStatus();
+                    }, 1000);
+                }
+            } catch (error) {
+                loginStatus.style.color = '#dc2626';
+                loginStatus.textContent = `Error: ${error.message}`;
+            } finally {
+                signInBtn.disabled = false;
+            }
+        }
+
+        // MODIFIED: Added page refresh on logout
+        async function handleLogout() {
+            try {
+                await fetch(`${API_BASE_URL}/api/logout`, { method: 'POST' });
+            } catch (error) {
+                console.error("Logout request failed:", error);
+            } finally {
+                location.reload();
+            }
+        }
+
+        // --- Core App Functions ---
+        function renderGroupInList(group, prepend = false) {
+            const li = document.createElement('li');
+            const a = document.createElement('a');
+            a.href = '#'; a.textContent = group.title; a.dataset.chatId = group.id; 
+            a.addEventListener('click', (e) => {
+                e.preventDefault();
+                if (currentChatId !== group.id) {
+                    currentChatId = group.id;
+                    fetchPhotos();
+                    document.querySelectorAll('#groupList a').forEach(link => link.classList.remove('active'));
+                    a.classList.add('active');
+                }
+            });
+            const menuBtn = document.createElement('button');
+            menuBtn.className = 'group-menu-btn'; menuBtn.innerHTML = '&#8942;'; menuBtn.title = 'Group options';
+            const dropdown = document.createElement('div');
+            dropdown.className = 'group-menu-dropdown';
+            const deleteGroupBtn = document.createElement('button');
+            deleteGroupBtn.textContent = 'Delete Album';
+            dropdown.appendChild(deleteGroupBtn);
+            li.appendChild(a); li.appendChild(menuBtn); li.appendChild(dropdown);
+            menuBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                document.querySelectorAll('.group-menu-dropdown.visible').forEach(d => { if (d !== dropdown) d.classList.remove('visible'); });
+                dropdown.classList.toggle('visible');
+            });
+            deleteGroupBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                dropdown.classList.remove('visible');
+                handleDeleteGroup(group.id, group.title);
+            });
+            if (prepend) { groupList.prepend(li); } else { groupList.appendChild(li); }
+        }
+
+        async function fetchMoreGroups() {
+            if (isLoadingGroups || allGroupsLoaded) return;
+            isLoadingGroups = true;
+            if (currentGroupOffset === 0) { statusMessage.textContent = 'Loading albums...'; }
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/my-groups?offset=${currentGroupOffset}&limit=${GROUPS_LIMIT}`);
+                if (!response.ok) throw new Error('Could not fetch albums.');
+                const data = await response.json();
+                if (currentGroupOffset === 0 && (!data.groups || data.groups.length === 0)) {
+                    statusMessage.textContent = 'No albums found. Create an album to get started!';
+                    chatTitle.textContent = 'No Albums Found';
+                    allGroupsLoaded = true; return;
+                }
+                if (data.groups && data.groups.length > 0) {
+                     if (currentGroupOffset === 0) { statusMessage.textContent = 'Select an album from the sidebar to view photos.'; }
+                    data.groups.forEach(group => renderGroupInList(group));
+                    currentGroupOffset += data.groups.length;
+                    if (!data.has_more) allGroupsLoaded = true;
+                } else { allGroupsLoaded = true; }
+            } catch (error) { statusMessage.textContent = `Error: ${error.message}`; } finally {
+                isLoadingGroups = false;
+                const isScrollable = groupList.scrollHeight > groupList.clientHeight;
+                if (!isScrollable && !allGroupsLoaded) { setTimeout(fetchMoreGroups, 100); }
+            }
+        }
+        
+        function initializeGroupLoading() {
+            groupList.innerHTML = ''; galleryGrid.innerHTML = ''; currentChatId = null;
+            isLoadingGroups = false; allGroupsLoaded = false; currentGroupOffset = 0;
+            chatTitle.textContent = 'Telegram Gallery';
+            fetchMoreGroups();
+        }
+        
+        async function fetchPhotos() {
+            if (!currentChatId) return;
+
+            galleryGrid.innerHTML = '';
+            statusMessage.style.display = 'block';
+            statusMessage.textContent = 'Loading photos...';
+            const activeLink = document.querySelector(`#groupList a[data-chat-id='${currentChatId}']`);
+            chatTitle.textContent = activeLink ? activeLink.textContent : 'Gallery';
+            
+            selectedPhotos.clear();
+            updateDeleteButtonVisibility();
+            updateSelectAllButtonState();
+
+            currentPhotoOffset = 0;
+            allPhotosLoaded = false;
+            isLoadingPhotos = false;
+            
+            await loadMorePhotos();
+        }
+
+        async function loadMorePhotos() {
+            if (isLoadingPhotos || allPhotosLoaded || !currentChatId) return;
+
+            isLoadingPhotos = true;
+            if (currentPhotoOffset === 0) {
+                statusMessage.textContent = 'Loading photos...';
+                statusMessage.style.display = 'block';
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/photos?chat=${currentChatId}&limit=${PHOTO_LIMIT}&offset=${currentPhotoOffset}`);
+                if (!response.ok) throw new Error('Failed to fetch photos.');
+                
+                const data = await response.json();
+                
+                if (data.photos && data.photos.length > 0) {
+                    statusMessage.style.display = 'none';
+                    data.photos.forEach(photo => {
+                        const card = document.createElement('div'); card.className = 'photo-card'; card.dataset.photoId = photo.id;
+                        const img = document.createElement('img');
+                        img.src = API_BASE_URL + photo.thumb_url; img.alt = `Photo ${photo.id}`; img.loading = 'lazy';
+                        img.addEventListener('click', () => openImageLightbox(photo.id));
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox'; checkbox.className = 'select-checkbox';
+                        checkbox.addEventListener('click', (e) => { e.stopPropagation(); toggleSelection(photo.id, card, checkbox); });
+                        card.appendChild(img); card.appendChild(checkbox); galleryGrid.appendChild(card);
+                    });
+                    currentPhotoOffset += data.photos.length;
+                    if (!data.has_more) { allPhotosLoaded = true; }
+                } else if (currentPhotoOffset === 0) {
+                    statusMessage.textContent = 'No photos found in this album.';
+                    allPhotosLoaded = true;
+                } else {
+                    allPhotosLoaded = true;
+                }
+            } catch (error) {
+                statusMessage.textContent = `Error: ${error.message}`;
+            } finally {
+                isLoadingPhotos = false;
+                updateSelectAllButtonState();
+            }
+        }
+
+        async function deleteSelectedPhotos() {
+            const idsToDelete = Array.from(selectedPhotos);
+            if (idsToDelete.length === 0 || !currentChatId) return;
+            showConfirm(`Are you sure you want to delete ${idsToDelete.length} photo(s)?`, async () => {
+                const deletePromises = idsToDelete.map(photoId => {
+                    return fetch(`${API_BASE_URL}/api/photos/${photoId}?chat=${currentChatId}`, { method: 'DELETE' }).then(response => {
+                        if (response.ok) {
+                            const cardToRemove = document.querySelector(`.photo-card[data-photo-id='${photoId}']`);
+                            if (cardToRemove) { cardToRemove.remove(); }
+                            return { success: true, id: photoId };
+                        }
+                        return response.json().then(err => Promise.reject({ success: false, id: photoId, error: err.detail }));
+                    });
+                });
+                const results = await Promise.allSettled(deletePromises);
+                
+                selectedPhotos.clear();
+                updateDeleteButtonVisibility();
+                updateSelectAllButtonState();
+
+                const failedCount = results.filter(r => r.status === 'rejected').length;
+                if (failedCount > 0) { alert(`Failed to delete ${failedCount} photo(s). Please refresh.`); }
+                if (galleryGrid.children.length === 0) {
+                    statusMessage.style.display = 'block'; statusMessage.textContent = 'No photos found in this album.';
+                }
+            });
+        }
+        
+        async function handleUpload(event) {
+            event.preventDefault();
+            const files = fileInput.files;
+            if (files.length === 0) { uploadStatus.textContent = 'Please select at least one file.'; return; }
+            if (!currentChatId) { alert("Please select an album before uploading."); return; }
+            uploadBtn.disabled = true; uploadBtn.textContent = 'Uploading...';
+            const totalFiles = files.length; let processedCount = 0;
+            const updateProgress = () => { processedCount++; const percentage = Math.round((processedCount / totalFiles) * 100); uploadStatus.textContent = `Uploading: ${percentage}% complete... (${processedCount}/${totalFiles})`; };
+            updateProgress(); processedCount = 0; uploadStatus.textContent = `Uploading: 0% complete... (0/${totalFiles})`;
+            const uploadPromises = Array.from(files).map(file => {
+                const formData = new FormData(); formData.append('file', file); 
+                return fetch(`${API_BASE_URL}/api/upload?chat=${currentChatId}`, { method: 'POST', body: formData }).then(response => {
+                    updateProgress();
+                    if (!response.ok) { return response.json().then(err => Promise.reject({ file, error: err.detail || 'Unknown error' })); }
+                    return { success: true };
+                }).catch(error => { updateProgress(); return Promise.reject(error); });
+            });
+            const results = await Promise.allSettled(uploadPromises);
+            const successCount = results.filter(r => r.status === 'fulfilled').length;
+            const failCount = totalFiles - successCount;
+            if (failCount > 0) { uploadStatus.textContent = `Upload complete. ${successCount} succeeded, ${failCount} failed.`; } else { uploadStatus.textContent = `All ${successCount} files uploaded successfully!`; }
+            setTimeout(() => { closeUploadLightbox(); if (successCount > 0) { fetchPhotos(); } }, 3000);
+        }
+
+        async function handleCreateGroup() {
+            const groupName = prompt("Please enter the name for the new album:");
+            if (!groupName || groupName.trim() === "") return;
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/groups`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: groupName.trim() }), });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.detail || 'Failed to create album.');
+                const newGroup = { id: result.group_id, title: result.group_title };
+                renderGroupInList(newGroup, true);
+                if (groupList.children.length === 1) { statusMessage.textContent = 'Select an album from the sidebar to view photos.'; }
+            } catch (error) { alert(`Error: ${error.message}`); }
+        }
+
+        async function handleDeleteGroup(groupId, groupTitle) {
+            showConfirm(`Are you sure you want to permanently delete the album "${groupTitle}"? This cannot be undone.`, async () => {
+                try {
+                    const response = await fetch(`${API_BASE_URL}/api/groups/${groupId}`, { method: 'DELETE' });
+                    if (!response.ok) { const result = await response.json(); throw new Error(result.detail || 'Failed to delete album.'); }
+                    const groupLink = document.querySelector(`#groupList a[data-chat-id='${groupId}']`);
+                    if (groupLink) { groupLink.parentElement.remove(); }
+                    if (String(currentChatId) === String(groupId)) {
+                        currentChatId = null; galleryGrid.innerHTML = '';
+                        statusMessage.textContent = 'Select an album from the sidebar to view photos.';
+                        chatTitle.textContent = 'Telegram Gallery';
+                        selectedPhotos.clear();
+                        updateDeleteButtonVisibility();
+                        updateSelectAllButtonState();
+                    }
+                    if (groupList.children.length === 0) {
+                        statusMessage.textContent = 'No albums found. Create an album to get started!';
+                        chatTitle.textContent = 'No Albums Found';
+                    }
+                } catch (error) { alert(`Error: ${error.message}`); }
+            });
+        }
+
+        function toggleSelection(photoId, cardElement, checkbox) {
+            if (selectedPhotos.has(photoId)) {
+                selectedPhotos.delete(photoId);
+                cardElement.classList.remove('selected');
+                checkbox.checked = false;
+            } else {
+                selectedPhotos.add(photoId);
+                cardElement.classList.add('selected');
+                checkbox.checked = true;
+            }
+            updateDeleteButtonVisibility();
+            updateSelectAllButtonState();
+        }
+
+        function updateDeleteButtonVisibility() {
+            deleteBtn.style.display = selectedPhotos.size > 0 ? 'inline-block' : 'none';
+            if (selectedPhotos.size > 0) { deleteBtn.textContent = `Delete (${selectedPhotos.size})`; }
+        }
+
+        function updateSelectAllButtonState() {
+            const photoCards = galleryGrid.querySelectorAll('.photo-card');
+            if (photoCards.length > 0) {
+                selectAllBtn.style.display = 'inline-block';
+                if (selectedPhotos.size === photoCards.length && selectedPhotos.size > 0) {
+                    selectAllBtn.textContent = 'Deselect All';
+                } else {
+                    selectAllBtn.textContent = 'Select All';
+                }
+            } else {
+                selectAllBtn.style.display = 'none';
+            }
+        }
+
+        function handleSelectAll() {
+            const photoCards = galleryGrid.querySelectorAll('.photo-card');
+            const allCurrentlySelected = photoCards.length > 0 && selectedPhotos.size === photoCards.length;
+
+            photoCards.forEach(card => {
+                const photoId = card.dataset.photoId;
+                const checkbox = card.querySelector('.select-checkbox');
+                if (allCurrentlySelected) {
+                    selectedPhotos.delete(photoId);
+                    card.classList.remove('selected');
+                    checkbox.checked = false;
+                } else {
+                    selectedPhotos.add(photoId);
+                    card.classList.add('selected');
+                    checkbox.checked = true;
+                }
+            });
+
+            updateDeleteButtonVisibility();
+            updateSelectAllButtonState();
+        }
+
+        function openImageLightbox(photoId) {
+            if (!currentChatId) return;
+            const imageUrl = `${API_BASE_URL}/api/photos/${photoId}/full?chat=${currentChatId}`;
+            lightboxImg.src = imageUrl; downloadBtn.href = imageUrl;
+            imageLightbox.classList.add('visible');
+        }
+        function closeImageLightbox() { imageLightbox.classList.remove('visible'); lightboxImg.src = ""; }
+        function openUploadLightbox() { if(currentChatId) uploadLightbox.classList.add('visible'); else alert("Please select an album first."); }
+        function closeUploadLightbox() { 
+            uploadLightbox.classList.remove('visible'); uploadForm.reset(); uploadStatus.textContent = '';
+            fileInfo.textContent = 'No files chosen'; uploadBtn.disabled = false; uploadBtn.textContent = 'Upload';
+        }
+        function showConfirm(message, callback) { confirmMessage.textContent = message; confirmModal.classList.add('visible'); currentConfirmCallback = callback; }
+        function closeConfirm() { confirmModal.classList.remove('visible'); currentConfirmCallback = null; }
+        function handleFiles(files) {
+            fileInput.files = files;
+            if (files.length > 0) { fileInfo.textContent = `${files.length} file(s) selected`; } else { fileInfo.textContent = 'No files chosen'; }
+        }
+
+        // --- Event Listeners ---
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drop-zone--over'); });
+        ['dragleave', 'dragend'].forEach(type => {
+            dropZone.addEventListener(type, () => dropZone.classList.remove('drop-zone--over'));
+        });
+        dropZone.addEventListener('drop', (e) => { e.preventDefault(); dropZone.classList.remove('drop-zone--over'); handleFiles(e.dataTransfer.files); });
+        fileInput.addEventListener('change', () => { handleFiles(fileInput.files); });
+        imageCloseBtn.addEventListener('click', closeImageLightbox);
+        uploadCloseBtn.addEventListener('click', closeUploadLightbox);
+        deleteBtn.addEventListener('click', deleteSelectedPhotos);
+        selectAllBtn.addEventListener('click', handleSelectAll);
+        addPhotoBtn.addEventListener('click', openUploadLightbox);
+        uploadForm.addEventListener('submit', handleUpload);
+        createGroupBtn.addEventListener('click', handleCreateGroup);
+        confirmYes.addEventListener('click', () => { if (currentConfirmCallback) currentConfirmCallback(); closeConfirm(); });
+        confirmNo.addEventListener('click', closeConfirm);
+        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeImageLightbox(); closeUploadLightbox(); closeConfirm(); closeLoginLightbox(); } });
+        document.addEventListener('click', (e) => {
+            if (e.target === imageLightbox) closeImageLightbox();
+            if (e.target === uploadLightbox) closeUploadLightbox();
+            if (e.target === confirmModal) closeConfirm();
+            if (e.target === loginLightbox) closeLoginLightbox();
+            const openDropdown = document.querySelector('.group-menu-dropdown.visible');
+            if (openDropdown && !openDropdown.parentElement.contains(e.target)) { openDropdown.classList.remove('visible'); }
+        });
+        
+        groupList.addEventListener('scroll', () => {
+            if (groupList.scrollTop + groupList.clientHeight >= groupList.scrollHeight - 100) { fetchMoreGroups(); }
+        });
+
+        window.addEventListener('scroll', () => {
+            if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight - 500) {
+                 loadMorePhotos();
+            }
+        });
+        
+        loginBtn.addEventListener('click', openLoginLightbox);
+        logoutBtn.addEventListener('click', handleLogout);
+        loginCloseBtn.addEventListener('click', closeLoginLightbox);
+        sendCodeBtn.addEventListener('click', handleSendCode);
+        loginForm.addEventListener('submit', handleSignIn);
+
+        // --- Initial Load ---
+        checkAuthStatus();
+    });
+    </script>
+
+</body>
+</html>

@@ -1,0 +1,8 @@
+# Ignore the file with our secret keys
+.env
+
+# Ignore other local files
+telegram_session.session
+__pycache__/
+media/
+uploads/

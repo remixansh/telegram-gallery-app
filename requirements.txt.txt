@@ -1,0 +1,7 @@
+fastapi
+gunicorn
+uvicorn[standard]
+telethon
+Pillow
+python-dotenv
+python-multipart
