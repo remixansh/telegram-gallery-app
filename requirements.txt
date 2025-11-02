@@ -5,3 +5,4 @@ telethon
 firebase-admin
 pyjwt
 Pillow
+python-multipart
