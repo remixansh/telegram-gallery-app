@@ -328,4 +328,4 @@ async def delete_photo(message_id: int, chat: str = Query(...)):
 # --- Static File Serving ---
 @app.get("/", response_class=FileResponse, include_in_schema=False)
 async def read_index():
-    return "index.html"
+    return "frontend/static/index.html"
