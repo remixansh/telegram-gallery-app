@@ -232,7 +232,7 @@ app.add_middleware(
 
 # --- Global State ---
 login_attempts: Dict[str, dict] = {}
-# active_clients: Dict[str, TelegramClient] = {}  <- REMOVED THIS CACHE TO FIX CONCURRENCY
+active_clients: Dict[str, TelegramClient] = {}
 user_group_cache: Dict[str, List[dict]] = {}
 cache_locks = defaultdict(asyncio.Lock)
 
@@ -254,9 +254,6 @@ async def get_current_client(token: str = Depends(oauth2_scheme)) -> TelegramCli
     """
     FastAPI Dependency: Decodes JWT token, gets user_id, and returns an
     active, authenticated TelegramClient using the FirestoreSession.
-    
-    MODIFIED: This function NO LONGER caches the client. It creates a
-    new client for each request to prevent concurrency deadlocks.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -273,9 +270,12 @@ async def get_current_client(token: str = Depends(oauth2_scheme)) -> TelegramCli
     except jwt.PyJWTError:
         raise credentials_exception
 
-    # --- REMOVED CLIENT CACHING BLOCK ---
-    # The active_clients cache caused deadlocks.
-    # A new client is now created for each request.
+    # Check active client cache first
+    if user_id in active_clients:
+        client = active_clients[user_id]
+        if client.is_connected() and await client.is_user_authorized():
+            return client
+        del active_clients[user_id]
 
     # Create new client from Firebase session
     try:
@@ -290,7 +290,7 @@ async def get_current_client(token: str = Depends(oauth2_scheme)) -> TelegramCli
         if not await client.is_user_authorized():
             raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
 
-        # --- REMOVED: active_clients[user_id] = client ---
+        active_clients[user_id] = client
         return client
         
     except Exception as e:
@@ -302,9 +302,6 @@ async def get_current_client(token: str = Depends(oauth2_scheme)) -> TelegramCli
 
 @app.get("/api/auth/status")
 async def get_auth_status(client: TelegramClient = Depends(get_current_client)):
-    # The dependency itself handles the auth check.
-    # We just need to disconnect the client it created.
-    await client.disconnect()
     return {"is_logged_in": True}
 
 
@@ -347,7 +344,7 @@ async def verify_login(data: dict):
     password = data.get("password")
 
     attempt = login_attempts.get(session_id)
-    if not attempt or not (code or password): # Allow password-only flow
+    if not attempt or not code:
         raise HTTPException(status_code=400, detail="Invalid session or missing code. Please start over.")
 
     client: TelegramClient = attempt["client"]
@@ -356,7 +353,6 @@ async def verify_login(data: dict):
     temp_session_file = attempt["file"]
 
     try:
-        # Pass code only if it's not a password-only step
         await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
     except PhoneCodeInvalidError:
         raise HTTPException(status_code=400, detail="The OTP code you entered is invalid.")
@@ -414,16 +410,12 @@ async def logout(client: TelegramClient = Depends(get_current_client)):
         fs_session.delete()
 
         # Clear local server caches
-        # --- REMOVED: if user_id in active_clients: del active_clients[user_id] ---
+        if user_id in active_clients: del active_clients[user_id]
         if user_id in user_group_cache: del user_group_cache[user_id]
         
         return {"status": "logged_out"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Logout failed: {e}")
-    finally:
-        # Ensure client disconnects even if logout fails
-        if client.is_connected():
-            await client.disconnect()
 
 
 # --- API Endpoints ---
@@ -456,9 +448,6 @@ async def get_photos(
                 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
-    finally:
-        # Disconnect the client to free up resources
-        await client.disconnect()
     return {"photos": photos_data, "has_more": has_more}
 
 
@@ -480,10 +469,8 @@ async def get_full_photo(
         buffer = io.BytesIO()
         await message.download_media(file=buffer)
         buffer.seek(0)
-        # StreamingResponse will call client.disconnect after streaming
-        return StreamingResponse(buffer, media_type="image/jpeg", background=client.disconnect)
+        return StreamingResponse(buffer, media_type="image/jpeg")
     except Exception as e:
-        await client.disconnect() # Ensure disconnect on error
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -504,14 +491,12 @@ async def get_photo_thumb(
             raise HTTPException(status_code=404, detail="Photo not found.")
         
         buffer = io.BytesIO()
-        await message.download_media(thumb=1, file=buffer) # Use thumb=1 for a decent quality thumb
+        await message.download_media(thumb=1, file=buffer)
         buffer.seek(0)
         
-        # StreamingResponse will call client.disconnect after streaming
-        return StreamingResponse(buffer, media_type="image/jpeg", background=client.disconnect)
+        return StreamingResponse(buffer, media_type="image/jpeg")
     except Exception as e:
         print(f"Error streaming thumb {message_id}: {e}")
-        await client.disconnect() # Ensure disconnect on error
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -535,7 +520,6 @@ async def upload_photo(
     finally:
         if os.path.exists(filepath):
             os.remove(filepath)
-        await client.disconnect() # Disconnect after upload
     return {"status": "success", "message": f"Successfully uploaded {file.filename}."}
 
 
@@ -560,8 +544,6 @@ async def create_group(
         return {"status": "success", "group_id": created_channel.id, "group_title": created_channel.title}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create group: {str(e)}")
-    finally:
-        await client.disconnect() # Disconnect after creating group
 
 
 @app.get("/api/my-groups")
@@ -571,37 +553,31 @@ async def get_my_groups(
     client: TelegramClient = Depends(get_current_client)
 ):
     """Gets a paginated list of the user's groups created by this app."""
-    try:
-        me = await client.get_me()
-        user_id = str(me.id)
-        
-        lock = cache_locks[user_id]
-        async with lock:
-            if user_id not in user_group_cache:
-                print(f"Cache miss for user {user_id}. Populating groups cache...")
-                try:
-                    temp_groups = []
-                    async for dialog in client.iter_dialogs():
-                        if isinstance(dialog.entity, Channel) and dialog.entity.megagroup:
-                            try:
-                                full_channel = await client(GetFullChannelRequest(channel=dialog.entity))
-                                if "Created via Web Gallery App" in full_channel.full_chat.about:
-                                    temp_groups.append({"id": dialog.id, "title": dialog.name})
-                            except Exception:
-                                continue 
-                    user_group_cache[user_id] = temp_groups
-                    print(f"Cache for user {user_id} populated with {len(temp_groups)} groups.")
-                except Exception as e:
-                    raise HTTPException(status_code=500, detail=f"Failed to build groups cache: {str(e)}")
-        
-        paginated_groups = user_group_cache[user_id][offset : offset + limit]
-        has_more = len(user_group_cache[user_id]) > offset + limit
-        return {"groups": paginated_groups, "has_more": has_more}
+    me = await client.get_me()
+    user_id = str(me.id)
     
-    except Exception as e:
-         raise HTTPException(status_code=500, detail=f"Failed to get groups: {str(e)}")
-    finally:
-        await client.disconnect() # Disconnect after getting groups
+    lock = cache_locks[user_id]
+    async with lock:
+        if user_id not in user_group_cache:
+            print(f"Cache miss for user {user_id}. Populating groups cache...")
+            try:
+                temp_groups = []
+                async for dialog in client.iter_dialogs():
+                    if isinstance(dialog.entity, Channel) and dialog.entity.megagroup:
+                        try:
+                            full_channel = await client(GetFullChannelRequest(channel=dialog.entity))
+                            if "Created via Web Gallery App" in full_channel.full_chat.about:
+                                temp_groups.append({"id": dialog.id, "title": dialog.name})
+                        except Exception:
+                            continue 
+                user_group_cache[user_id] = temp_groups
+                print(f"Cache for user {user_id} populated with {len(temp_groups)} groups.")
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to build groups cache: {str(e)}")
+    
+    paginated_groups = user_group_cache[user_id][offset : offset + limit]
+    has_more = len(user_group_cache[user_id]) > offset + limit
+    return {"groups": paginated_groups, "has_more": has_more}
 
 
 @app.delete("/api/groups/{group_id}")
@@ -621,8 +597,6 @@ async def delete_group(
         return {"status": "success", "message": f"Group {group_id} has been deleted."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete group: {str(e)}")
-    finally:
-        await client.disconnect() # Disconnect after deleting group
 
 
 @app.delete("/api/photos/{message_id}")
@@ -642,10 +616,7 @@ async def delete_photo(
         return {"status": "success", "message": f"Photo {message_id} deleted."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete photo {message_id}: {str(e)}")
-    finally:
-        await client.disconnect() # Disconnect after deleting photo
 
 
 # --- Static File Serving ---
-# This must be the LAST mount.
-app.mount("/", StaticFiles(directory=".", html=True), name="static")
+app.mount("/", StaticFiles(directory="frontend/static", html=True), name="static")
