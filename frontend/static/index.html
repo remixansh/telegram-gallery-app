@@ -277,6 +277,28 @@
             box-sizing: border-box;
             padding-right: 5rem;
         }
+
+        /* --- *** NEW: Mobile Blocker *** --- */
+        #desktopOnlyLightbox {
+            display: none; /* Hidden by default */
+            z-index: 9999; /* On top of all */
+            opacity: 1; /* Make sure it's visible when displayed */
+            visibility: visible;
+        }
+        #desktopOnlyLightbox .lightbox-content {
+            text-align: center;
+        }
+
+        @media (max-width: 768px) {
+            /* Show the blocker */
+            #desktopOnlyLightbox {
+                display: flex;
+            }
+            /* Hide the entire app */
+            .app-layout, .fab-add-photo {
+                display: none;
+            }
+        }
     </style>
 </head>
 <body>
@@ -376,6 +398,13 @@
                     <div id="loginStatus"></div>
                 </form>
             </div>
+        </div>
+    </div>
+    <div class="lightbox" id="desktopOnlyLightbox">
+        <div class="lightbox-content">
+            <h2>Desktop View Required</h2>
+            <p> Made with ❤️ by Ansh </p>
+            <p>Please open this page on a desktop or laptop computer to continue.</p>
         </div>
     </div>
 
