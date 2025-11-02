@@ -125,7 +125,11 @@
             transition: transform 0.25s, box-shadow 0.25s; cursor: pointer;
         }
         .photo-card:hover { transform: translateY(-6px) scale(1.02); box-shadow: 0 10px 20px rgba(0,0,0,0.2); }
-        .photo-card img { width: 100%; height: 200px; object-fit: cover; display: block; }
+        .photo-card img { 
+            width: 100%; height: 200px; object-fit: cover; display: block;
+            /* Add a subtle background color for the loading state */
+            background-color: rgba(0,0,0,0.05); 
+        }
         .photo-card.selected { box-shadow: 0 0 0 3px #2563eb; }
         .photo-card.selected img { opacity: 0.7; }
         .select-checkbox {
@@ -377,6 +381,71 @@
 
     <script>
     document.addEventListener('DOMContentLoaded', () => {
+
+        // --- NEW: IndexedDB Helper for Caching ---
+        const ThumbDB = {
+            db: null,
+            dbName: 'TelegramThumbCache',
+            storeName: 'thumbnails',
+
+            init() {
+                return new Promise((resolve, reject) => {
+                    const request = indexedDB.open(this.dbName, 1);
+
+                    request.onupgradeneeded = (event) => {
+                        const db = event.target.result;
+                        if (!db.objectStoreNames.contains(this.storeName)) {
+                            db.createObjectStore(this.storeName, { keyPath: 'id' });
+                        }
+                    };
+                    request.onsuccess = (event) => {
+                        this.db = event.target.result;
+                        console.log('Thumbnail DB initialized');
+                        resolve();
+                    };
+                    request.onerror = (event) => {
+                        console.error('IndexedDB error:', event.target.error);
+                        reject(event.target.error);
+                    };
+                });
+            },
+
+            set(id, blob) {
+                return new Promise((resolve, reject) => {
+                    if (!this.db) return reject('DB not initialized');
+                    const transaction = this.db.transaction([this.storeName], 'readwrite');
+                    const store = transaction.objectStore(this.storeName);
+                    const request = store.put({ id: id, blob: blob });
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = (event) => reject(event.target.error);
+                });
+            },
+
+            get(id) {
+                return new Promise((resolve, reject) => {
+                    if (!this.db) return reject('DB not initialized');
+                    const transaction = this.db.transaction([this.storeName], 'readonly');
+                    const store = transaction.objectStore(this.storeName);
+                    const request = store.get(id);
+                    request.onsuccess = (event) => {
+                        resolve(event.target.result ? event.target.result.blob : null);
+                    };
+                    request.onerror = (event) => reject(event.target.error);
+                });
+            },
+
+            delete(id) {
+                return new Promise((resolve, reject) => {
+                    if (!this.db) return reject('DB not initialized');
+                    const transaction = this.db.transaction([this.storeName], 'readwrite');
+                    const store = transaction.objectStore(this.storeName);
+                    const request = store.delete(id);
+                    transaction.oncomplete = () => resolve();
+                    transaction.onerror = (event) => reject(event.target.error);
+                });
+            }
+        };
+
         // --- DOM Elements ---
         const groupList = document.getElementById('groupList');
         const galleryGrid = document.getElementById('galleryGrid');
@@ -421,10 +490,11 @@
 
         // --- Configuration & State ---
         const PHOTO_LIMIT = 50;
-        const API_BASE_URL = 'http://127.0.0.1:8000';
+        const API_BASE_URL = window.location.origin; // Use relative paths
         let currentChatId = null;
         let selectedPhotos = new Set(); 
         let currentConfirmCallback = null;
+        let currentLoginSessionId = null; 
 
         // --- State for progressive group loading ---
         let isLoadingGroups = false;
@@ -437,16 +507,63 @@
         let isLoadingPhotos = false;
         let allPhotosLoaded = false;
 
-        // --- Authentication Functions ---
-        async function checkAuthStatus() {
+        // --- API Fetch Wrapper for JWT Auth ---
+        
+        function forceLogout() {
+            localStorage.removeItem('user_token');
+            if (!window.location.hash.includes('logged_out')) {
+                window.location.hash = 'logged_out';
+                location.reload();
+            }
+        }
+
+        async function fetchApi(url, options = {}) {
+            const token = localStorage.getItem('user_token');
+            if (!options.headers) {
+                options.headers = {};
+            }
+            if (token) {
+                options.headers['Authorization'] = `Bearer ${token}`;
+            }
+            if (options.body && typeof options.body === 'string') {
+                 options.headers['Content-Type'] = 'application/json';
+            }
+
             try {
-                const response = await fetch(`${API_BASE_URL}/api/auth/status`);
+                const response = await fetch(url, options);
+                if (response.status === 401) {
+                    console.error('Authentication failed (401). Forcing logout.');
+                    forceLogout();
+                    throw new Error('Authentication failed');
+                }
+                return response;
+            } catch (error) {
+                console.error('FetchApi Error:', error);
+                throw error;
+            }
+        }
+        
+        // --- Authentication Functions ---
+        
+        async function checkAuthStatus() {
+            const token = localStorage.getItem('user_token');
+            if (!token) {
+                updateUIForAuthState(false);
+                statusMessage.textContent = 'Please log in to view your groups and photos.';
+                return;
+            }
+            try {
+                const response = await fetchApi(`${API_BASE_URL}/api/auth/status`);
+                if (!response.ok) {
+                    const data = await response.json();
+                    throw new Error(data.detail || 'Auth check failed');
+                }
                 const data = await response.json();
                 updateUIForAuthState(data.is_logged_in);
             } catch (error) {
-                console.error("Auth check failed:", error);
+                console.error("Auth check failed:", error.message);
                 updateUIForAuthState(false);
-                statusMessage.textContent = 'Could not connect to the server.';
+                statusMessage.textContent = 'Your session has expired. Please log in again.';
             }
         }
 
@@ -479,6 +596,7 @@
                 verifyStepP.textContent = "Enter the code from Telegram.";
                 codeInput.style.display = 'block';
                 passwordInput.style.display = 'none';
+                currentLoginSessionId = null;
 
                 loginForm.reset();
                 phoneInput.value = "+91";
@@ -504,7 +622,7 @@
                 });
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.detail);
-
+                currentLoginSessionId = data.session_id;
                 formStepsContainer.classList.add('show-verify-step');
                 loginStatus.textContent = data.message;
             } catch (error) {
@@ -520,6 +638,11 @@
             const code = codeInput.value;
             const password = passwordInput.value;
 
+            if (!currentLoginSessionId) {
+                loginStatus.style.color = '#dc2626';
+                loginStatus.textContent = 'Session error. Please restart login.';
+                return;
+            }
             if (passwordInput.style.display !== 'none' && !password) {
                 loginStatus.style.color = '#dc2626';
                 loginStatus.textContent = 'Please enter your password.';
@@ -536,7 +659,11 @@
             loginStatus.textContent = 'Verifying...';
 
             try {
-                const payload = { code, password };
+                const payload = { 
+                    code, 
+                    password,
+                    session_id: currentLoginSessionId
+                };
                 
                 const response = await fetch(`${API_BASE_URL}/api/login/verify`, {
                     method: 'POST',
@@ -553,7 +680,8 @@
                     passwordInput.style.display = 'block';
                     passwordInput.focus();
                     loginStatus.textContent = '';
-                } else if (data.status === 'login_successful') {
+                } else if (data.status === 'login_successful' && data.token) {
+                    localStorage.setItem('user_token', data.token);
                     loginStatus.style.color = '#16a34a';
                     loginStatus.textContent = 'Login successful!';
                     setTimeout(() => {
@@ -569,18 +697,18 @@
             }
         }
 
-        // MODIFIED: Added page refresh on logout
         async function handleLogout() {
             try {
-                await fetch(`${API_BASE_URL}/api/logout`, { method: 'POST' });
+                await fetchApi(`${API_BASE_URL}/api/logout`, { method: 'POST' });
             } catch (error) {
                 console.error("Logout request failed:", error);
             } finally {
+                localStorage.removeItem('user_token');
                 location.reload();
             }
         }
 
-        // --- Core App Functions ---
+        // --- Core App Functions (Using fetchApi) ---
         function renderGroupInList(group, prepend = false) {
             const li = document.createElement('li');
             const a = document.createElement('a');
@@ -620,7 +748,7 @@
             isLoadingGroups = true;
             if (currentGroupOffset === 0) { statusMessage.textContent = 'Loading albums...'; }
             try {
-                const response = await fetch(`${API_BASE_URL}/api/my-groups?offset=${currentGroupOffset}&limit=${GROUPS_LIMIT}`);
+                const response = await fetchApi(`${API_BASE_URL}/api/my-groups?offset=${currentGroupOffset}&limit=${GROUPS_LIMIT}`);
                 if (!response.ok) throw new Error('Could not fetch albums.');
                 const data = await response.json();
                 if (currentGroupOffset === 0 && (!data.groups || data.groups.length === 0)) {
@@ -651,6 +779,13 @@
         async function fetchPhotos() {
             if (!currentChatId) return;
 
+            // NEW: Revoke old blob URLs to prevent memory leaks
+            galleryGrid.querySelectorAll('img').forEach(img => {
+                if (img.src && img.src.startsWith('blob:')) {
+                    URL.revokeObjectURL(img.src);
+                }
+            });
+
             galleryGrid.innerHTML = '';
             statusMessage.style.display = 'block';
             statusMessage.textContent = 'Loading photos...';
@@ -668,6 +803,42 @@
             await loadMorePhotos();
         }
 
+        /**
+         * NEW: Loads a thumbnail from cache or fetches it, then displays it.
+         */
+        async function loadAndCacheThumbnail(imgElement, photoId) {
+            try {
+                // 1. Check IndexedDB first
+                const cachedBlob = await ThumbDB.get(photoId);
+                if (cachedBlob) {
+                    const objectUrl = URL.createObjectURL(cachedBlob);
+                    imgElement.src = objectUrl;
+                    imgElement.alt = `Photo ${photoId}`;
+                    return;
+                }
+
+                // 2. If not in cache, fetch from the new API endpoint
+                const response = await fetchApi(`${API_BASE_URL}/api/photos/${photoId}/thumb?chat=${currentChatId}`);
+                if (!response.ok) {
+                    throw new Error('Failed to fetch thumbnail');
+                }
+                
+                const blob = await response.blob();
+
+                // 3. Save the new blob to IndexedDB
+                await ThumbDB.set(photoId, blob);
+
+                // 4. Display the image
+                const objectUrl = URL.createObjectURL(blob);
+                imgElement.src = objectUrl;
+                imgElement.alt = `Photo ${photoId}`;
+
+            } catch (error) {
+                console.error(`Failed to load thumb ${photoId}:`, error);
+                imgElement.alt = "Failed to load"; // Show an error on the image
+            }
+        }
+
         async function loadMorePhotos() {
             if (isLoadingPhotos || allPhotosLoaded || !currentChatId) return;
 
@@ -678,23 +849,39 @@
             }
 
             try {
-                const response = await fetch(`${API_BASE_URL}/api/photos?chat=${currentChatId}&limit=${PHOTO_LIMIT}&offset=${currentPhotoOffset}`);
+                const response = await fetchApi(`${API_BASE_URL}/api/photos?chat=${currentChatId}&limit=${PHOTO_LIMIT}&offset=${currentPhotoOffset}`);
                 if (!response.ok) throw new Error('Failed to fetch photos.');
                 
                 const data = await response.json();
                 
                 if (data.photos && data.photos.length > 0) {
                     statusMessage.style.display = 'none';
+                    
+                    // MODIFIED: Use the new thumbnail loading logic
                     data.photos.forEach(photo => {
-                        const card = document.createElement('div'); card.className = 'photo-card'; card.dataset.photoId = photo.id;
+                        const card = document.createElement('div');
+                        card.className = 'photo-card';
+                        card.dataset.photoId = photo.id;
+                        
                         const img = document.createElement('img');
-                        img.src = API_BASE_URL + photo.thumb_url; img.alt = `Photo ${photo.id}`; img.loading = 'lazy';
-                        img.addEventListener('click', () => openImageLightbox(photo.id));
+                        img.alt = `Loading ${photo.id}...`;
+                        img.loading = 'lazy';
+                        
+                        // Asynchronously load the thumbnail
+                        loadAndCacheThumbnail(img, photo.id);
+
+                        img.addEventListener('click', () => openImageLightbox(photo.id, `photo_${photo.id}.jpg`));
+                        
                         const checkbox = document.createElement('input');
-                        checkbox.type = 'checkbox'; checkbox.className = 'select-checkbox';
+                        checkbox.type = 'checkbox';
+                        checkbox.className = 'select-checkbox';
                         checkbox.addEventListener('click', (e) => { e.stopPropagation(); toggleSelection(photo.id, card, checkbox); });
-                        card.appendChild(img); card.appendChild(checkbox); galleryGrid.appendChild(card);
+                        
+                        card.appendChild(img);
+                        card.appendChild(checkbox);
+                        galleryGrid.appendChild(card);
                     });
+
                     currentPhotoOffset += data.photos.length;
                     if (!data.has_more) { allPhotosLoaded = true; }
                 } else if (currentPhotoOffset === 0) {
@@ -716,16 +903,28 @@
             if (idsToDelete.length === 0 || !currentChatId) return;
             showConfirm(`Are you sure you want to delete ${idsToDelete.length} photo(s)?`, async () => {
                 const deletePromises = idsToDelete.map(photoId => {
-                    return fetch(`${API_BASE_URL}/api/photos/${photoId}?chat=${currentChatId}`, { method: 'DELETE' }).then(response => {
+                    return fetchApi(`${API_BASE_URL}/api/photos/${photoId}?chat=${currentChatId}`, { method: 'DELETE' }).then(response => {
                         if (response.ok) {
                             const cardToRemove = document.querySelector(`.photo-card[data-photo-id='${photoId}']`);
-                            if (cardToRemove) { cardToRemove.remove(); }
+                            if (cardToRemove) {
+                                // Revoke blob URL from the image being removed
+                                const img = cardToRemove.querySelector('img');
+                                if (img && img.src && img.src.startsWith('blob:')) {
+                                    URL.revokeObjectURL(img.src);
+                                }
+                                cardToRemove.remove();
+                            }
                             return { success: true, id: photoId };
                         }
                         return response.json().then(err => Promise.reject({ success: false, id: photoId, error: err.detail }));
                     });
                 });
                 const results = await Promise.allSettled(deletePromises);
+                
+                // NEW: Clear deleted photos from the thumbnail cache
+                console.log('Clearing deleted thumbs from cache...');
+                const deleteCachePromises = idsToDelete.map(id => ThumbDB.delete(id));
+                await Promise.allSettled(deleteCachePromises);
                 
                 selectedPhotos.clear();
                 updateDeleteButtonVisibility();
@@ -748,14 +947,20 @@
             const totalFiles = files.length; let processedCount = 0;
             const updateProgress = () => { processedCount++; const percentage = Math.round((processedCount / totalFiles) * 100); uploadStatus.textContent = `Uploading: ${percentage}% complete... (${processedCount}/${totalFiles})`; };
             updateProgress(); processedCount = 0; uploadStatus.textContent = `Uploading: 0% complete... (0/${totalFiles})`;
+            
             const uploadPromises = Array.from(files).map(file => {
-                const formData = new FormData(); formData.append('file', file); 
-                return fetch(`${API_BASE_URL}/api/upload?chat=${currentChatId}`, { method: 'POST', body: formData }).then(response => {
+                const formData = new FormData(); 
+                formData.append('file', file); 
+                return fetchApi(`${API_BASE_URL}/api/upload?chat=${currentChatId}`, { 
+                    method: 'POST', 
+                    body: formData 
+                }).then(response => {
                     updateProgress();
                     if (!response.ok) { return response.json().then(err => Promise.reject({ file, error: err.detail || 'Unknown error' })); }
                     return { success: true };
                 }).catch(error => { updateProgress(); return Promise.reject(error); });
             });
+
             const results = await Promise.allSettled(uploadPromises);
             const successCount = results.filter(r => r.status === 'fulfilled').length;
             const failCount = totalFiles - successCount;
@@ -767,7 +972,10 @@
             const groupName = prompt("Please enter the name for the new album:");
             if (!groupName || groupName.trim() === "") return;
             try {
-                const response = await fetch(`${API_BASE_URL}/api/groups`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: groupName.trim() }), });
+                const response = await fetchApi(`${API_BASE_URL}/api/groups`, { 
+                    method: 'POST', 
+                    body: JSON.stringify({ title: groupName.trim() }),
+                });
                 const result = await response.json();
                 if (!response.ok) throw new Error(result.detail || 'Failed to create album.');
                 const newGroup = { id: result.group_id, title: result.group_title };
@@ -779,7 +987,7 @@
         async function handleDeleteGroup(groupId, groupTitle) {
             showConfirm(`Are you sure you want to permanently delete the album "${groupTitle}"? This cannot be undone.`, async () => {
                 try {
-                    const response = await fetch(`${API_BASE_URL}/api/groups/${groupId}`, { method: 'DELETE' });
+                    const response = await fetchApi(`${API_BASE_URL}/api/groups/${groupId}`, { method: 'DELETE' });
                     if (!response.ok) { const result = await response.json(); throw new Error(result.detail || 'Failed to delete album.'); }
                     const groupLink = document.querySelector(`#groupList a[data-chat-id='${groupId}']`);
                     if (groupLink) { groupLink.parentElement.remove(); }
@@ -854,13 +1062,43 @@
             updateSelectAllButtonState();
         }
 
-        function openImageLightbox(photoId) {
+        async function openImageLightbox(photoId, downloadName = 'image.jpg') {
             if (!currentChatId) return;
-            const imageUrl = `${API_BASE_URL}/api/photos/${photoId}/full?chat=${currentChatId}`;
-            lightboxImg.src = imageUrl; downloadBtn.href = imageUrl;
+            
+            lightboxImg.src = "";
+            downloadBtn.href = "#";
+            downloadBtn.removeAttribute('download');
             imageLightbox.classList.add('visible');
+
+            try {
+                const response = await fetchApi(`${API_BASE_URL}/api/photos/${photoId}/full?chat=${currentChatId}`);
+                if (!response.ok) throw new Error('Could not load full image.');
+
+                const blob = await response.blob();
+                const objectUrl = URL.createObjectURL(blob);
+
+                lightboxImg.src = objectUrl;
+                downloadBtn.href = objectUrl;
+                downloadBtn.download = downloadName;
+
+            } catch (error) {
+                console.error("Failed to load full image:", error);
+                closeImageLightbox();
+                alert("Error: Could not load full-size image.");
+            }
         }
-        function closeImageLightbox() { imageLightbox.classList.remove('visible'); lightboxImg.src = ""; }
+
+        function closeImageLightbox() {
+            const objectUrl = lightboxImg.src;
+            if (objectUrl && objectUrl.startsWith('blob:')) {
+                URL.revokeObjectURL(objectUrl);
+            }
+            lightboxImg.src = "";
+            downloadBtn.href = "#";
+            downloadBtn.removeAttribute('download');
+            imageLightbox.classList.remove('visible');
+        }
+
         function openUploadLightbox() { if(currentChatId) uploadLightbox.classList.add('visible'); else alert("Please select an album first."); }
         function closeUploadLightbox() { 
             uploadLightbox.classList.remove('visible'); uploadForm.reset(); uploadStatus.textContent = '';
@@ -909,6 +1147,7 @@
             }
         });
         
+        // Auth Listeners
         loginBtn.addEventListener('click', openLoginLightbox);
         logoutBtn.addEventListener('click', handleLogout);
         loginCloseBtn.addEventListener('click', closeLoginLightbox);
@@ -916,7 +1155,14 @@
         loginForm.addEventListener('submit', handleSignIn);
 
         // --- Initial Load ---
-        checkAuthStatus();
+        // MODIFIED: Initialize the thumbnail cache DB first, then check auth.
+        ThumbDB.init().then(() => {
+            console.log('Thumbnail cache ready, checking auth.');
+            checkAuthStatus();
+        }).catch(err => {
+            console.error('Failed to init thumbnail cache:', err);
+            checkAuthStatus(); // Still try to load the app
+        });
     });
     </script>
 
