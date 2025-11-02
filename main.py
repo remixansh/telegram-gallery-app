@@ -16,6 +16,7 @@ from fastapi.security import OAuth2PasswordBearer
 from telethon.errors.rpcerrorlist import SessionPasswordNeededError, PhoneCodeInvalidError, FloodWaitError
 from telethon import TelegramClient
 from telethon.sessions import Session
+from telethon.crypto import AuthKey
 from telethon.tl.types import InputMessagesFilterPhotos, Channel
 from telethon.tl.functions.channels import CreateChannelRequest, GetFullChannelRequest, DeleteChannelRequest
 from typing import List, Dict, Optional
@@ -28,14 +29,11 @@ TG_API_ID = os.environ.get("TG_API_ID")
 TG_API_HASH = os.environ.get("TG_API_HASH")
 JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
 
-# --- NEW: Firebase Setup ---
-# This expects a 'firebase-service-account.json' file in your project root
-# On Render, you will upload this as a "Secret File"
+# --- Firebase Setup ---
 SERVICE_ACCOUNT_PATH = os.environ.get("FIREBASE_SERVICE_ACCOUNT", "firebase-service-account.json")
 
 if not os.path.exists(SERVICE_ACCOUNT_PATH):
     print(f"Warning: Firebase service account file not found at {SERVICE_ACCOUNT_PATH}.")
-    # In a real app, you might raise an error if not found and not in a test env
 else:
     try:
         cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
@@ -43,12 +41,9 @@ else:
         print("Firebase Admin SDK Initialized.")
     except Exception as e:
         print(f"Error initializing Firebase Admin SDK: {e}")
-        # Handle the case where initialization fails
-        # For now, we'll allow it to continue, but Firestore-dependent features will fail
 
 # Get the Firestore client
 db = firestore.client()
-
 
 if not all([TG_API_ID, TG_API_HASH, JWT_SECRET_KEY]):
     raise ValueError("Please set TG_API_ID, TG_API_HASH, and JWT_SECRET_KEY environment variables.")
@@ -57,16 +52,15 @@ if not all([TG_API_ID, TG_API_HASH, JWT_SECRET_KEY]):
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 10080  # 7 days
 
-# --- Directory Setup (Render-Compatible) ---
-# We no longer need a permanent 'SESSIONS_DIR'
+# --- Directory Setup ---
 BASE_DATA_DIR = Path(os.environ.get("RENDER_DISK_MOUNT_PATH", "."))
 UPLOADS_DIR = BASE_DATA_DIR / "uploads"
-TEMP_SESSIONS_DIR = BASE_DATA_DIR / "temp_sessions" # Still needed for the login process
+TEMP_SESSIONS_DIR = BASE_DATA_DIR / "temp_sessions"
 
 UPLOADS_DIR.mkdir(exist_ok=True)
 TEMP_SESSIONS_DIR.mkdir(exist_ok=True)
 
-# --- NEW: Custom Firebase Session for Telethon ---
+# --- Custom Firebase Session for Telethon ---
 class FirestoreSession(Session):
     """
     A custom Telethon session class that stores session data in Firestore.
@@ -77,6 +71,13 @@ class FirestoreSession(Session):
         self.user_id = user_id
         self.collection_name = "telethon_sessions"
         self.doc_ref = self.firestore_client.collection(self.collection_name).document(self.user_id)
+        
+        # Initialize internal storage
+        self._dc_id = 0
+        self._server_address = None
+        self._port = None
+        self._auth_key = None
+        self._takeout_id = None
         
         # Load data on initialization
         self.load()
@@ -89,11 +90,10 @@ class FirestoreSession(Session):
                 self._dc_id = data.get('dc_id', 0)
                 self._server_address = data.get('server_address')
                 self._port = data.get('port')
-                # Firebase stores bytes as bytes, which is great
-                self._auth_key = data.get('auth_key')
-            else:
-                # No session found in Firestore
-                pass
+                auth_key_data = data.get('auth_key')
+                if auth_key_data:
+                    self._auth_key = AuthKey(data=auth_key_data)
+                self._takeout_id = data.get('takeout_id')
         except Exception as e:
             print(f"Error loading session for {self.user_id}: {e}")
 
@@ -104,22 +104,108 @@ class FirestoreSession(Session):
                 'dc_id': self._dc_id,
                 'server_address': self._server_address,
                 'port': self._port,
-                'auth_key': self._auth_key
+                'auth_key': self._auth_key.key if self._auth_key else None,
+                'takeout_id': self._takeout_id
             }
             try:
                 self.doc_ref.set(data)
             except Exception as e:
                 print(f"Error saving session for {self.user_id}: {e}")
 
+    # Properties required by Session base class
+    @property
+    def dc_id(self):
+        return self._dc_id
+    
+    @dc_id.setter
+    def dc_id(self, value):
+        self._dc_id = value
+        self.save()
+
+    @property
+    def server_address(self):
+        return self._server_address
+    
+    @server_address.setter
+    def server_address(self, value):
+        self._server_address = value
+        self.save()
+
+    @property
+    def port(self):
+        return self._port
+    
+    @port.setter
+    def port(self, value):
+        self._port = value
+        self.save()
+
+    @property
+    def auth_key(self):
+        return self._auth_key
+    
+    @auth_key.setter
+    def auth_key(self, value):
+        if value is not None and not isinstance(value, AuthKey):
+            value = AuthKey(data=value)
+        self._auth_key = value
+        self.save()
+
+    @property
+    def takeout_id(self):
+        return self._takeout_id
+    
+    @takeout_id.setter
+    def takeout_id(self, value):
+        self._takeout_id = value
+        self.save()
+
+    # Methods to handle auth key
     def set_dc(self, dc_id, server_address, port):
         self._dc_id = dc_id
         self._server_address = server_address
         self._port = port
         self.save()
 
-    def set_auth_key(self, auth_key):
+    def get_auth_key(self, dc_id=None):
+        """Returns the authorization key for the given DC"""
+        return self._auth_key
+
+    def set_auth_key(self, auth_key, dc_id=None):
+        """Sets the authorization key for the given DC"""
+        if auth_key is not None and not isinstance(auth_key, AuthKey):
+            auth_key = AuthKey(data=auth_key)
         self._auth_key = auth_key
         self.save()
+
+    # Entity cache methods
+    def get_input_entity(self, key):
+        """Gets the input entity from cache"""
+        return None
+
+    def cache_file(self, md5_digest, file_size, instance):
+        """Caches a file"""
+        pass
+
+    def get_file(self, md5_digest, file_size):
+        """Gets a cached file"""
+        return None
+
+    def process_entities(self, tlo):
+        """Processes entities to cache them"""
+        pass
+
+    def get_update_state(self, entity_id):
+        """Gets the update state for an entity"""
+        return None
+
+    def set_update_state(self, entity_id, state):
+        """Sets the update state for an entity"""
+        pass
+
+    def get_update_states(self):
+        """Gets all update states"""
+        return []
 
     def delete(self):
         """Deletes the session from Firestore."""
@@ -127,6 +213,10 @@ class FirestoreSession(Session):
             self.doc_ref.delete()
         except Exception as e:
             print(f"Error deleting session for {self.user_id}: {e}")
+
+    def close(self):
+        """Closes the session"""
+        pass
 
 
 # --- FastAPI App Initialization ---
@@ -140,7 +230,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Global State (Minimized for Multi-User) ---
+# --- Global State ---
 login_attempts: Dict[str, dict] = {}
 active_clients: Dict[str, TelegramClient] = {}
 user_group_cache: Dict[str, List[dict]] = {}
@@ -160,7 +250,6 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=ALGORITHM)
     return encoded_jwt
 
-# --- MODIFIED: get_current_client ---
 async def get_current_client(token: str = Depends(oauth2_scheme)) -> TelegramClient:
     """
     FastAPI Dependency: Decodes JWT token, gets user_id, and returns an
@@ -181,30 +270,26 @@ async def get_current_client(token: str = Depends(oauth2_scheme)) -> TelegramCli
     except jwt.PyJWTError:
         raise credentials_exception
 
-    # 1. Check active client cache first
+    # Check active client cache first
     if user_id in active_clients:
         client = active_clients[user_id]
         if client.is_connected() and await client.is_user_authorized():
             return client
         del active_clients[user_id]
 
-    # 2. Create new client from Firebase session
+    # Create new client from Firebase session
     try:
-        # Create the custom session object
         fs_session = FirestoreSession(db, user_id)
         
-        # Check if the session was successfully loaded from DB
         if not fs_session.get_auth_key():
              raise HTTPException(status_code=401, detail="Session not found in DB. Please log in again.")
 
-        # Pass the *session object* (not a string) to the client
         client = TelegramClient(fs_session, int(TG_API_ID), TG_API_HASH)
         await client.connect()
 
         if not await client.is_user_authorized():
             raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
 
-        # 3. Add new, valid client to cache
         active_clients[user_id] = client
         return client
         
@@ -222,7 +307,6 @@ async def get_auth_status(client: TelegramClient = Depends(get_current_client)):
 
 @app.post("/api/login/send-code")
 async def send_login_code(data: dict):
-    # This part is the same, it creates a temporary file-based session
     phone_number = data.get("phone")
     if not phone_number:
         raise HTTPException(status_code=400, detail="Phone number is required.")
@@ -249,7 +333,6 @@ async def send_login_code(data: dict):
         raise HTTPException(status_code=500, detail=f"Failed to send code: {e}")
 
 
-# --- MODIFIED: verify_login ---
 @app.post("/api/login/verify")
 async def verify_login(data: dict):
     """
@@ -284,27 +367,27 @@ async def verify_login(data: dict):
         await client.disconnect()
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
-    # --- Login Successful: Promote temp session to Firebase ---
+    # Login Successful: Promote temp session to Firebase
     try:
         me = await client.get_me()
         user_id = str(me.id)
 
-        # 1. Create a new Firestore session
+        # Create a new Firestore session
         fs_session = FirestoreSession(db, user_id)
         
-        # 2. Manually copy the auth data from the temp client to the new session
+        # Copy the auth data from the temp client to the new session
         fs_session.set_dc(client.session.dc_id, client.session.server_address, client.session.port)
         fs_session.set_auth_key(client.session.auth_key)
         
-        # 3. Disconnect the temp client (we're done with it)
+        # Disconnect the temp client
         await client.disconnect()
         
-        # 4. Create JWT token
+        # Create JWT token
         access_token = create_access_token(data={"sub": user_id})
 
         return {"status": "login_successful", "token": access_token}
     finally:
-        # 5. Clean up the temp file session and dictionary
+        # Clean up the temp file session
         if session_id in login_attempts:
             del login_attempts[session_id]
         temp_session_file_path = Path(f"{temp_session_file}.session")
@@ -312,7 +395,6 @@ async def verify_login(data: dict):
             os.remove(temp_session_file_path)
 
 
-# --- MODIFIED: logout ---
 @app.post("/api/logout")
 async def logout(client: TelegramClient = Depends(get_current_client)):
     """Logs out from Telegram and deletes the session from Firestore."""
@@ -320,14 +402,14 @@ async def logout(client: TelegramClient = Depends(get_current_client)):
         me = await client.get_me()
         user_id = str(me.id)
         
-        # 1. Tell Telethon to log out (invalidates keys on Telegram's side)
+        # Tell Telethon to log out
         await client.log_out() 
         
-        # 2. Manually delete the session from Firestore
+        # Delete the session from Firestore
         fs_session = FirestoreSession(db, user_id)
         fs_session.delete()
 
-        # 3. Clear local server caches
+        # Clear local server caches
         if user_id in active_clients: del active_clients[user_id]
         if user_id in user_group_cache: del user_group_cache[user_id]
         
@@ -336,7 +418,7 @@ async def logout(client: TelegramClient = Depends(get_current_client)):
         raise HTTPException(status_code=500, detail=f"Logout failed: {e}")
 
 
-# --- API Endpoints (No changes needed below this line) ---
+# --- API Endpoints ---
 
 @app.get("/api/photos")
 async def get_photos(
