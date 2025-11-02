@@ -1,7 +1,7 @@
 fastapi
-gunicorn
-uvicorn[standard]
-telethon
-Pillow
+uvicorn
 python-dotenv
-python-multipart
+telethon
+firebase-admin
+pyjwt
+Pillow
