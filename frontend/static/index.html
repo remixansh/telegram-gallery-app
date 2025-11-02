@@ -160,7 +160,7 @@
         .lightbox.visible { opacity: 1; visibility: visible; }
         .lightbox-content {
             position: relative;
-            background: rgba(255, 255, 255, 1.0);
+            background: rgba(255, 255, 255, 0.5);
             backdrop-filter: blur(18px) saturate(180%);
             border: 1px solid rgba(255,255,255,0.4);
             border-radius: 20px;
@@ -277,30 +277,6 @@
             box-sizing: border-box;
             padding-right: 5rem;
         }
-
-        /* --- *** NEW: Mobile Blocker *** --- */
-        #desktopOnlyLightbox {
-            display: none; /* Hidden by default */
-            z-index: 9999; /* On top of all */
-            opacity: 1; /* Make sure it's visible when displayed */
-            visibility: visible;
-        }
-        #desktopOnlyLightbox .lightbox-content {
-            text-align: center;
-        }
-
-        @media (max-width: 768px) {
-            /* Show the blocker */
-            #desktopOnlyLightbox {
-                display: flex;
-            }
-            /* Hide the entire app */
-            .app-layout, .fab-add-photo {
-                display: none;
-            }
-        }
-        /* --- *** END NEW STYLES *** --- */
-
     </style>
 </head>
 <body>
@@ -400,14 +376,6 @@
                     <div id="loginStatus"></div>
                 </form>
             </div>
-        </div>
-    </div>
-
-    <div class="lightbox" id="desktopOnlyLightbox">
-        <div class="lightbox-content">
-            <h2>Desktop View Required</h2>
-            <p> Made with ❤️ by Ansh </p>
-            <p>Please open this page on a desktop or laptop computer to continue.</p>
         </div>
     </div>
 
@@ -872,7 +840,7 @@
         }
 
         async function loadMorePhotos() {
-            if (isLoadingPhotos || allGroupsLoaded || !currentChatId) return;
+            if (isLoadingPhotos || allPhotosLoaded || !currentChatId) return;
 
             isLoadingPhotos = true;
             if (currentPhotoOffset === 0) {
