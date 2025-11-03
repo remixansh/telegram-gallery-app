@@ -2,6 +2,6 @@ fastapi
 gunicorn
 uvicorn[standard]
 telethon
-Pillow==9.5.0
+Pillow
 python-dotenv
 python-multipart
