@@ -220,7 +220,12 @@ class FirestoreSession(Session):
 
 
 # --- FastAPI App Initialization ---
-app = FastAPI(title="Telegram Gallery API (Firebase Sessions)")
+app = FastAPI(
+    title="Telegram Gallery API (Firebase Sessions)",
+    docs_url=None,  # This disables /docs
+    redoc_url=None  # This disables /redoc
+)
+
 
 app.add_middleware(
     CORSMiddleware,
